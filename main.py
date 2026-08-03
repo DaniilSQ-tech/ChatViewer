@@ -1,42 +1,35 @@
 import sys
 
-from PyQt6.QtWidgets import (
-    QApplication,
-    QLabel,
-    QMainWindow,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from dotenv import load_dotenv
+from PyQt6.QtWidgets import QApplication
+
+from db import Database, DEFAULT_DB_PATH
+from models import ModelManager
+from network import NetworkClient
+from ui.main_window import MainWindow
 
 
-class MainWindow(QMainWindow):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("ChatViewer")
-        self.setMinimumSize(400, 300)
-
-        self.label = QLabel("Привет! Это минимальное приложение на PyQt.")
-        self.button = QPushButton("Нажми меня")
-        self.button.clicked.connect(self.on_button_click)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.label)
-        layout.addWidget(self.button)
-
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
-
-    def on_button_click(self) -> None:
-        self.label.setText("Кнопка нажата!")
+def init_app() -> tuple[Database, ModelManager, NetworkClient]:
+    load_dotenv()
+    load_dotenv(".env.local", override=True)
+    db = Database(DEFAULT_DB_PATH)
+    model_manager = ModelManager(db)
+    model_manager.seed_defaults()
+    model_manager.sync_activation_from_env()
+    network = NetworkClient(db, model_manager)
+    return db, model_manager, network
 
 
 def main() -> None:
+    db, model_manager, network = init_app()
     app = QApplication(sys.argv)
-    window = MainWindow()
+    app.setApplicationName("ChatList")
+    window = MainWindow(db, model_manager, network)
     window.show()
-    sys.exit(app.exec())
+
+    exit_code = app.exec()
+    db.close()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
