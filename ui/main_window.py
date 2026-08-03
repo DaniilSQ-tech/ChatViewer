@@ -37,6 +37,7 @@ from export import export_json, export_markdown
 from models import AIModel, ModelManager, ModelValidationError
 from network import NetworkClient, SUPPORTED_PROVIDERS
 from session import SessionResults
+from ui.response_view import ResponseViewWindow
 from workers import SendPromptWorker
 
 
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         self._worker: SendPromptWorker | None = None
         self._current_prompt_id: int | None = None
         self._updating_prompt_combo = False
+        self._response_windows: list[ResponseViewWindow] = []
 
         self.setWindowTitle("ChatList")
         width = int(self.db.get_setting("window_width", "1200") or "1200")
@@ -209,8 +211,8 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        self.results_table = QTableWidget(0, 3)
-        self.results_table.setHorizontalHeaderLabels(["", "Модель", "Ответ"])
+        self.results_table = QTableWidget(0, 4)
+        self.results_table.setHorizontalHeaderLabels(["", "Модель", "Ответ", ""])
         self.results_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents
         )
@@ -219,6 +221,9 @@ class MainWindow(QMainWindow):
         )
         self.results_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.Stretch
+        )
+        self.results_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents
         )
         self.results_table.setSortingEnabled(False)
         self.results_table.itemChanged.connect(self._on_result_item_changed)
@@ -415,7 +420,30 @@ class MainWindow(QMainWindow):
             response_item.setToolTip(row.response_text)
             self.results_table.setItem(idx, 2, response_item)
 
+            open_btn = QPushButton("Открыть")
+            open_btn.clicked.connect(
+                lambda _checked=False, name=row.model_name, text=row.response_text: (
+                    self._open_response(name, text)
+                )
+            )
+            self.results_table.setCellWidget(idx, 3, open_btn)
+
         self.results_table.blockSignals(False)
+
+    def _open_response(self, model_name: str, response_text: str) -> None:
+        window = ResponseViewWindow(
+            model_name=model_name,
+            response_text=response_text,
+            prompt_text=self.session.prompt_text,
+            parent=self,
+        )
+        window.show()
+        self._response_windows.append(window)
+        window.destroyed.connect(
+            lambda _obj=None, w=window: self._response_windows.remove(w)
+            if w in self._response_windows
+            else None
+        )
 
     def _on_result_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
