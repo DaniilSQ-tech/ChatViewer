@@ -12,7 +12,7 @@ from models import AIModel, ModelManager
 
 SUPPORTED_PROVIDERS = frozenset({"openai", "deepseek", "groq", "openrouter"})
 
-ProviderAdapter = Callable[[AIModel, str, str, float], str]
+ChatAdapter = Callable[[AIModel, list[dict[str, str]], str, float], str]
 
 
 def _extract_chat_content(data: dict) -> str:
@@ -28,9 +28,9 @@ def _extract_chat_content(data: dict) -> str:
     return str(content).strip()
 
 
-def _openai_compatible_request(
+def _openai_compatible_chat(
     model: AIModel,
-    prompt_text: str,
+    messages: list[dict[str, str]],
     api_key: str,
     timeout: float,
     extra_headers: dict[str, str] | None = None,
@@ -43,7 +43,7 @@ def _openai_compatible_request(
         headers.update(extra_headers)
     payload = {
         "model": model.api_id,
-        "messages": [{"role": "user", "content": prompt_text}],
+        "messages": messages,
     }
 
     with httpx.Client(timeout=timeout) as client:
@@ -52,15 +52,15 @@ def _openai_compatible_request(
         return _extract_chat_content(response.json())
 
 
-def _openrouter_request(
+def _openrouter_chat(
     model: AIModel,
-    prompt_text: str,
+    messages: list[dict[str, str]],
     api_key: str,
     timeout: float,
 ) -> str:
-    return _openai_compatible_request(
+    return _openai_compatible_chat(
         model,
-        prompt_text,
+        messages,
         api_key,
         timeout,
         extra_headers={
@@ -70,11 +70,11 @@ def _openrouter_request(
     )
 
 
-PROVIDER_ADAPTERS: dict[str, ProviderAdapter] = {
-    "openai": _openai_compatible_request,
-    "deepseek": _openai_compatible_request,
-    "groq": _openai_compatible_request,
-    "openrouter": _openrouter_request,
+PROVIDER_CHAT_ADAPTERS: dict[str, ChatAdapter] = {
+    "openai": _openai_compatible_chat,
+    "deepseek": _openai_compatible_chat,
+    "groq": _openai_compatible_chat,
+    "openrouter": _openrouter_chat,
 }
 
 
@@ -120,6 +120,21 @@ class NetworkClient:
         *,
         log_requests: bool | None = None,
     ) -> str:
+        return self.send_messages(
+            model,
+            [{"role": "user", "content": prompt_text}],
+            prompt_id=prompt_id,
+            log_requests=log_requests,
+        )
+
+    def send_messages(
+        self,
+        model: AIModel,
+        messages: list[dict[str, str]],
+        prompt_id: int | None = None,
+        *,
+        log_requests: bool | None = None,
+    ) -> str:
         should_log = self.log_requests if log_requests is None else log_requests
         api_key = self._models.get_api_key(model)
         if not api_key:
@@ -129,7 +144,7 @@ class NetworkClient:
             self._log(model, prompt_id, "error", 0, message, should_log)
             return message
 
-        adapter = PROVIDER_ADAPTERS.get(model.provider)
+        adapter = PROVIDER_CHAT_ADAPTERS.get(model.provider)
         if adapter is None:
             message = f"Неподдерживаемый провайдер: {model.provider}"
             self._log(model, prompt_id, "error", 0, message, should_log)
@@ -137,7 +152,7 @@ class NetworkClient:
 
         started = time.perf_counter()
         try:
-            result = adapter(model, prompt_text, api_key, self.timeout)
+            result = adapter(model, messages, api_key, self.timeout)
             duration_ms = int((time.perf_counter() - started) * 1000)
             self._log(model, prompt_id, "success", duration_ms, None, should_log)
             return result

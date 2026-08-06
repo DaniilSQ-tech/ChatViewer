@@ -7,6 +7,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -36,9 +37,19 @@ from db import Database, Prompt, Result
 from export import export_json, export_markdown
 from models import AIModel, ModelManager, ModelValidationError
 from network import NetworkClient, SUPPORTED_PROVIDERS
+from prompt_assistant import PromptAssistant, PromptImprovementResult
 from session import SessionResults
+from ui.about_dialog import AboutDialog
+from ui.app_theme import (
+    THEME_DARK,
+    THEME_LIGHT,
+    apply_appearance,
+    get_font_size,
+    get_theme,
+)
+from ui.prompt_assistant_dialog import PromptAssistantDialog
 from ui.response_view import ResponseViewWindow
-from workers import SendPromptWorker
+from workers import ImprovePromptWorker, SendPromptWorker
 
 
 class ModelDialog(QDialog):
@@ -105,7 +116,10 @@ class MainWindow(QMainWindow):
         self.model_manager = model_manager
         self.network = network
         self.session = SessionResults()
+        self._prompt_assistant = PromptAssistant()
         self._worker: SendPromptWorker | None = None
+        self._improve_worker: ImprovePromptWorker | None = None
+        self._assistant_model: AIModel | None = None
         self._current_prompt_id: int | None = None
         self._updating_prompt_combo = False
         self._response_windows: list[ResponseViewWindow] = []
@@ -133,6 +147,11 @@ class MainWindow(QMainWindow):
         quit_action = QAction("Выход", self)
         quit_action.triggered.connect(self.close)
         menu.addAction(quit_action)
+
+        help_menu = self.menuBar().addMenu("Справка")
+        about_action = QAction("О программе", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
 
     def _build_status_bar(self) -> None:
         self.status_bar = QStatusBar()
@@ -186,8 +205,14 @@ class MainWindow(QMainWindow):
         layout.addLayout(tags_row)
 
         btn_row = QHBoxLayout()
+        self.improve_btn = QPushButton("Улучшить промт")
+        self.improve_btn.clicked.connect(self._on_improve_prompt)
+        self.improve_btn.setToolTip(
+            "Отправить промт в AI-ассистент для улучшения и переформулировки"
+        )
         self.send_btn = QPushButton("Отправить")
         self.send_btn.clicked.connect(self._on_send)
+        btn_row.addWidget(self.improve_btn)
         btn_row.addWidget(self.send_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -319,7 +344,26 @@ class MainWindow(QMainWindow):
         self.height_spin.setRange(480, 2160)
         form.addRow("Высота окна:", self.height_spin)
 
+        appearance_group = QGroupBox("Внешний вид")
+        appearance_layout = QFormLayout(appearance_group)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("Светлая", THEME_LIGHT)
+        self.theme_combo.addItem("Тёмная", THEME_DARK)
+        appearance_layout.addRow("Тема:", self.theme_combo)
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 24)
+        self.font_size_spin.setSuffix(" pt")
+        appearance_layout.addRow("Размер шрифта:", self.font_size_spin)
+
+        assistant_group = QGroupBox("AI-ассистент промтов")
+        assistant_layout = QFormLayout(assistant_group)
+        self.assistant_enabled_check = QCheckBox("Использовать AI-ассистент")
+        assistant_layout.addRow("", self.assistant_enabled_check)
+        self.assistant_model_combo = QComboBox()
+        assistant_layout.addRow("Модель ассистента:", self.assistant_model_combo)
         layout.addLayout(form)
+        layout.addWidget(appearance_group)
+        layout.addWidget(assistant_group)
 
         save_btn = QPushButton("Сохранить настройки")
         save_btn.clicked.connect(self._on_save_settings)
@@ -362,6 +406,7 @@ class MainWindow(QMainWindow):
         self._refresh_models()
         self._refresh_settings()
         self._refresh_logs()
+        self._update_improve_button_state()
         ready = len(self.model_manager.get_ready_active_models())
         active = len(self.model_manager.load_active())
         self.status_bar.showMessage(
@@ -515,6 +560,69 @@ class MainWindow(QMainWindow):
         self.height_spin.setValue(
             int(self.db.get_setting("window_height", "800") or "800")
         )
+        theme = get_theme(self.db)
+        theme_index = self.theme_combo.findData(theme)
+        if theme_index >= 0:
+            self.theme_combo.setCurrentIndex(theme_index)
+        self.font_size_spin.setValue(get_font_size(self.db))
+        self.assistant_enabled_check.setChecked(
+            self.db.get_setting("assistant_enabled", "1") == "1"
+        )
+        self._refresh_assistant_model_combo()
+        saved_id = self.db.get_setting("assistant_model_id", "") or ""
+        if saved_id:
+            index = self.assistant_model_combo.findData(int(saved_id))
+            if index >= 0:
+                self.assistant_model_combo.setCurrentIndex(index)
+        elif self.assistant_model_combo.count() > 0:
+            first_id = self.assistant_model_combo.itemData(0)
+            if first_id is not None:
+                self.db.set_setting("assistant_model_id", str(first_id))
+
+    def _refresh_assistant_model_combo(self) -> None:
+        self.assistant_model_combo.clear()
+        chat_models = self.model_manager.get_chat_models(ready_only=True)
+        if not chat_models:
+            chat_models = self.model_manager.get_chat_models(ready_only=False)
+        for model in chat_models:
+            has_key = "✓" if self.model_manager.get_api_key(model) else "✗"
+            self.assistant_model_combo.addItem(
+                f"{model.name} ({has_key})",
+                model.id,
+            )
+        if self.assistant_model_combo.count() == 0:
+            self.assistant_model_combo.addItem("— нет доступных моделей —", None)
+
+    def _get_assistant_model(self) -> AIModel | None:
+        if self.db.get_setting("assistant_enabled", "1") != "1":
+            return None
+        saved_id = self.db.get_setting("assistant_model_id", "") or ""
+        if saved_id:
+            model = self.model_manager.get_by_id(int(saved_id))
+            if model and self.model_manager.get_api_key(model):
+                if model in self.model_manager.get_chat_models():
+                    return model
+        for model in self.model_manager.get_chat_models(ready_only=True):
+            return model
+        return None
+
+    def _update_improve_button_state(self) -> None:
+        enabled_setting = self.db.get_setting("assistant_enabled", "1") == "1"
+        model = self._get_assistant_model()
+        busy = (
+            self._improve_worker is not None and self._improve_worker.isRunning()
+        ) or (self._worker is not None and self._worker.isRunning())
+        can_improve = enabled_setting and model is not None and not busy
+        self.improve_btn.setEnabled(can_improve)
+        if not enabled_setting:
+            tip = "AI-ассистент отключён в настройках"
+        elif model is None:
+            tip = "Выберите модель ассистента с API-ключом в настройках"
+        elif busy:
+            tip = "Дождитесь завершения текущего запроса"
+        else:
+            tip = f"Улучшить промт через «{model.name}»"
+        self.improve_btn.setToolTip(tip)
 
     def _refresh_logs(self) -> None:
         models = {m.id: m.name for m in self.model_manager.load_all()}
@@ -587,6 +695,7 @@ class MainWindow(QMainWindow):
         self._refresh_prompt_combo()
 
         self.send_btn.setEnabled(False)
+        self.improve_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.progress_bar.setMaximum(len(ready))
@@ -601,6 +710,78 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._on_send_failed)
         self._worker.start()
 
+    def _on_improve_prompt(self) -> None:
+        if self._improve_worker and self._improve_worker.isRunning():
+            return
+        if self._worker and self._worker.isRunning():
+            return
+
+        text = self.prompt_edit.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, "AI-ассистент", "Введите текст промта.")
+            return
+
+        model = self._get_assistant_model()
+        if model is None:
+            QMessageBox.warning(
+                self,
+                "AI-ассистент",
+                "Модель ассистента не выбрана или отсутствует API-ключ.",
+            )
+            return
+
+        self._assistant_model = model
+        self.improve_btn.setEnabled(False)
+        self.send_btn.setEnabled(False)
+        self.status_bar.showMessage(f"Улучшение промта через «{model.name}»...")
+
+        self._improve_worker = ImprovePromptWorker(
+            self._prompt_assistant,
+            self.network,
+            model,
+            text,
+        )
+        self._improve_worker.finished.connect(self._on_improve_finished)
+        self._improve_worker.failed.connect(self._on_improve_failed)
+        self._improve_worker.start()
+
+    def _on_improve_finished(self, result: PromptImprovementResult) -> None:
+        self.send_btn.setEnabled(True)
+        self._update_improve_button_state()
+        if self._assistant_model:
+            self.db.create_request_log(
+                model_id=self._assistant_model.id,
+                prompt_id=None,
+                status="success",
+                duration_ms=None,
+                error_message="prompt_assistant",
+            )
+            self._refresh_logs()
+        self.status_bar.showMessage("Промт улучшен. Выберите вариант для подстановки.")
+        dialog = PromptAssistantDialog(result, parent=self)
+        dialog.apply_requested.connect(self._apply_improved_prompt)
+        dialog.exec()
+
+    def _on_improve_failed(self, message: str) -> None:
+        self.send_btn.setEnabled(True)
+        self._update_improve_button_state()
+        if self._assistant_model:
+            self.db.create_request_log(
+                model_id=self._assistant_model.id,
+                prompt_id=None,
+                status="error",
+                duration_ms=None,
+                error_message=f"prompt_assistant: {message[:200]}",
+            )
+            self._refresh_logs()
+        QMessageBox.warning(self, "AI-ассистент", message)
+        self.status_bar.showMessage(message)
+
+    def _apply_improved_prompt(self, text: str) -> None:
+        self.prompt_edit.setPlainText(text)
+        self._current_prompt_id = None
+        self.status_bar.showMessage("Выбранный вариант подставлен в поле ввода.")
+
     def _on_send_progress(self, model_name: str, current: int, total: int) -> None:
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
@@ -613,6 +794,7 @@ class MainWindow(QMainWindow):
     def _on_send_finished(self) -> None:
         self.send_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
+        self._update_improve_button_state()
         self._refresh_logs()
         self.tabs.setCurrentIndex(1)
         self.status_bar.showMessage(
@@ -622,6 +804,7 @@ class MainWindow(QMainWindow):
     def _on_send_failed(self, message: str) -> None:
         self.send_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
+        self._update_improve_button_state()
         QMessageBox.warning(self, "Отправка", message)
         self.status_bar.showMessage(message)
 
@@ -780,10 +963,29 @@ class MainWindow(QMainWindow):
         self.db.set_setting("db_path", self.db_path_edit.text().strip())
         self.db.set_setting("window_width", str(self.width_spin.value()))
         self.db.set_setting("window_height", str(self.height_spin.value()))
+        self.db.set_setting("theme", self.theme_combo.currentData())
+        self.db.set_setting("font_size", str(self.font_size_spin.value()))
+        self.db.set_setting(
+            "assistant_enabled",
+            "1" if self.assistant_enabled_check.isChecked() else "0",
+        )
+        model_id = self.assistant_model_combo.currentData()
+        self.db.set_setting(
+            "assistant_model_id",
+            str(model_id) if model_id is not None else "",
+        )
         self.network.timeout = float(self.timeout_spin.value())
         self.resize(self.width_spin.value(), self.height_spin.value())
+
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            apply_appearance(app, self.db)
+
         QMessageBox.information(self, "Настройки", "Настройки сохранены.")
         self._refresh_all()
+
+    def _show_about(self) -> None:
+        AboutDialog(self).exec()
 
     def _export_results(self, fmt: str) -> None:
         rows = self.session.get_selected() or self.session.rows
@@ -812,4 +1014,6 @@ class MainWindow(QMainWindow):
         self.db.set_setting("window_height", str(self.height()))
         if self._worker and self._worker.isRunning():
             self._worker.wait(3000)
+        if self._improve_worker and self._improve_worker.isRunning():
+            self._improve_worker.wait(3000)
         super().closeEvent(event)

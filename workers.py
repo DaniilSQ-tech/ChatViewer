@@ -9,6 +9,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from models import AIModel
 from network import NetworkClient
+from prompt_assistant import PromptAssistant, PromptAssistantError
 
 
 class SendPromptWorker(QThread):
@@ -62,3 +63,42 @@ class SendPromptWorker(QThread):
                 self.result_ready.emit(model.id, model.name, response)
 
         self.finished_all.emit()
+
+
+class ImprovePromptWorker(QThread):
+    """Улучшает промт через одну модель в фоновом потоке."""
+
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        assistant: PromptAssistant,
+        network: NetworkClient,
+        model: AIModel,
+        prompt_text: str,
+    ) -> None:
+        super().__init__()
+        self._assistant = assistant
+        self._network = network
+        self._model = model
+        self._prompt_text = prompt_text
+
+    def run(self) -> None:
+        try:
+            result = self._assistant.improve(
+                self._prompt_text,
+                self._model,
+                self._network,
+            )
+        except PromptAssistantError as exc:
+            self.failed.emit(str(exc))
+            return
+        except Exception as exc:
+            self.failed.emit(f"Неожиданная ошибка: {exc}")
+            return
+
+        if result.error:
+            self.failed.emit(result.error)
+            return
+        self.finished.emit(result)

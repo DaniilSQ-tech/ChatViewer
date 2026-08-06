@@ -178,6 +178,13 @@ class ModelManager:
             return AIModel.from_record(record) if record else None
         return None
 
+    def get_chat_models(self, ready_only: bool = False) -> list[AIModel]:
+        if ready_only:
+            models = self.get_ready_active_models()
+        else:
+            models = self.load_all()
+        return [model for model in models if model.api_id not in NON_CHAT_API_IDS]
+
     def sync_activation_from_env(self) -> int:
         """Активирует chat-модели, для которых есть ключ в .env."""
         activated = 0

@@ -69,6 +69,10 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "request_timeout": "60",
     "window_width": "1200",
     "window_height": "800",
+    "assistant_model_id": "",
+    "assistant_enabled": "1",
+    "theme": "light",
+    "font_size": "10",
 }
 
 
