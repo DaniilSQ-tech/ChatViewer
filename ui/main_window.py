@@ -124,7 +124,10 @@ class MainWindow(QMainWindow):
         self._updating_prompt_combo = False
         self._response_windows: list[ResponseViewWindow] = []
 
-        self.setWindowTitle("ChatList")
+        app = QApplication.instance()
+        app_version = app.applicationVersion() if isinstance(app, QApplication) else ""
+        title = f"ChatList {app_version}".strip() if app_version else "ChatList"
+        self.setWindowTitle(title)
         width = int(self.db.get_setting("window_width", "1200") or "1200")
         height = int(self.db.get_setting("window_height", "800") or "800")
         self.resize(width, height)
@@ -409,8 +412,12 @@ class MainWindow(QMainWindow):
         self._update_improve_button_state()
         ready = len(self.model_manager.get_ready_active_models())
         active = len(self.model_manager.load_active())
+        app = QApplication.instance()
+        app_version = app.applicationVersion() if isinstance(app, QApplication) else ""
         self.status_bar.showMessage(
-            f"Готово. Активных моделей: {active}, с ключом: {ready}."
+            f"ChatList v{app_version} — активных моделей: {active}, с ключом: {ready}."
+            if app_version
+            else f"Готово. Активных моделей: {active}, с ключом: {ready}."
         )
 
     def _refresh_prompt_combo(self) -> None:

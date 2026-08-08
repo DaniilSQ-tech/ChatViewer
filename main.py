@@ -5,11 +5,13 @@ from dotenv import load_dotenv
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
+from app_logging import setup_logging
 from db import Database, DEFAULT_DB_PATH
 from models import ModelManager
 from network import NetworkClient
 from ui.app_theme import apply_appearance
 from ui.main_window import MainWindow
+from version import __version__
 
 
 def init_app() -> tuple[Database, ModelManager, NetworkClient]:
@@ -24,10 +26,12 @@ def init_app() -> tuple[Database, ModelManager, NetworkClient]:
 
 
 def main() -> None:
+    setup_logging()
     db, model_manager, network = init_app()
     app = QApplication(sys.argv)
     app.setApplicationName("ChatList")
     app.setApplicationDisplayName("ChatList")
+    app.setApplicationVersion(__version__)
 
     icon_path = Path("app.ico")
     if icon_path.exists():

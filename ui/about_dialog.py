@@ -8,8 +8,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QVBoxLayout
 
+from version import __version__
+
 APP_NAME = "ChatList"
-APP_VERSION = "1.0.0"
 APP_DESCRIPTION = (
     "Приложение для отправки одного промта в несколько нейросетей "
     "и сравнения их ответов. Поддерживает OpenRouter, SQLite, "
@@ -42,7 +43,7 @@ class AboutDialog(QDialog):
 
         title = QLabel(
             f"<h2>{APP_NAME}</h2>"
-            f"<p style='color:#6366f1;'><b>версия {APP_VERSION}</b></p>"
+            f"<p style='color:#6366f1;'><b>версия {__version__}</b></p>"
         )
         title.setTextFormat(Qt.TextFormat.RichText)
         header.addWidget(title, stretch=1)

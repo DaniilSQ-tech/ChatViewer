@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Callable
 
@@ -9,6 +10,8 @@ import httpx
 
 from db import Database
 from models import AIModel, ModelManager
+
+logger = logging.getLogger("chatlist.network")
 
 SUPPORTED_PROVIDERS = frozenset({"openai", "deepseek", "groq", "openrouter"})
 
@@ -208,3 +211,17 @@ class NetworkClient:
             duration_ms=duration_ms,
             error_message=error_message,
         )
+        if status == "success":
+            logger.info(
+                "Модель «%s»: %s (%d ms)",
+                model.name,
+                status,
+                duration_ms,
+            )
+        else:
+            logger.warning(
+                "Модель «%s»: %s — %s",
+                model.name,
+                status,
+                error_message or "нет описания",
+            )
